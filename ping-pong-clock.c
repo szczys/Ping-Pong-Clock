@@ -26,6 +26,11 @@
 #define digit2 0b0000000011111111
 #define digit3 0b0101010101010101
 
+//i2c definitions
+#define i2c_slave_address 0xD0 	//Address for DS3232
+#define i2c_read (i2c_slave_address + 1)
+#define i2c_write i2c_slave_address
+
 const unsigned int getDigit[] = {
   0b0111111001111110,	//0
   0b0101001000010100,	//1
@@ -67,6 +72,8 @@ void init(void) {
 
   SHIFTPORT &= ~SHIFTMASK;	//Set all pins low
   COLPORT &= ~COLMASK;	//Set all pins low
+
+  TWBR = 0x02;	//Set 400khz I2C clock - f_cpu/(16 + (2 * TWBR))*prescaler
 }
 
 void initTimers(void) {
@@ -127,9 +134,89 @@ void incMinute(void) {
   }
 }
 
+void twi_start(unsigned char SlvAddr)
+{
+  TWCR = (1<<TWINT) | (1<<TWEN) | (1<<TWSTA);   //Send start command
+  while(!(TWCR & (1<<TWINT)));                  //Wait for bus to become ready
+  TWDR = SlvAddr;                     //Write device address to data register
+  TWCR = (1<<TWINT) | (1<<TWEN);                //Send device address
+  while(!(TWCR & (1<<TWINT)));                  //Wait for bus to become ready
+}
+
+void twi_send_byte(unsigned char data)
+{
+  TWDR = data;
+  TWCR = (1<<TWINT) | (1<<TWEN);
+  while(!(TWCR & (1<<TWINT))); 
+}
+
+
+void twi_stop(void)
+{
+  TWCR = (1<<TWINT) | (1<<TWEN) | (1<<TWSTO);
+}
+
+char twi_read_ack(void)
+{
+  TWCR = (1<<TWINT) | (1<<TWEN) | (1<<TWEA);
+  while(!(TWCR & (1<<TWINT)));
+  return TWDR;
+}
+
+char twi_read_nack(void)
+{
+  TWCR = (1<<TWINT) | (1<<TWEN);
+  while(!(TWCR & (1<<TWINT)));
+  return TWDR;  
+}
+
 int main(void) {
   init();
   initTimers();
+
+  //Get time from DS3232
+  twi_start(i2c_write);
+  twi_send_byte(0x01);
+  twi_start(i2c_read);
+  unsigned char temp_mins = twi_read_ack();
+  unsigned char temp_hours = twi_read_nack();
+  twi_stop();
+
+/*
+  if (temp_hours == 0x00) {	//00:00
+    hour_tens = 12;
+    hour_ones = 2;
+  }
+  else if (temp_hours < 0x10) {
+    hour_tens = 10;
+    hour_ones = temp_hours;
+  }
+  else if ((temp_hours >= 0x10) && (temp_hours < 0x13)) {
+    hour_tens = 12;
+    hour_ones = (temp_hours & 0x0F);
+  }
+  else if ((temp_hours >= 0x13) && (temp_hours < 0x20)) {
+    hour_tens = 10;
+    hour_ones = (temp_hours & 0x0F) - 2;
+  }
+  else if ((temp_hours >= 0x20) && (temp_hours < 0x22)) {
+    hour_tens = 10;
+    hour_ones = (temp_hours & 0x0F) + 8;
+  }
+  else {
+    hour_tens = 12;
+    hour_ones = (temp_hours & 0x0F) - 2;
+  }
+*/
+
+  unsigned char dec_hours = ((temp_hours>>4)*10) + (temp_hours & 0x0F);
+  if (dec_hours > 12) dec_hours -= 12;
+  hour_tens = ((dec_hours/10)*2) + 10;
+  hour_ones = dec_hours%10;
+
+
+  minute_tens = temp_mins>>4;
+  minute_ones = temp_mins & 0x0F;
 
   unsigned char seconds = 0;
   

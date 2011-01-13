@@ -31,6 +31,21 @@
 #define i2c_read (i2c_slave_address + 1)
 #define i2c_write i2c_slave_address
 
+//Prototypes
+void init(void);
+void initTimers(void);
+void delay_ms(int c);
+void shift(unsigned int data);
+void incMinute(void);
+void twi_start(unsigned char SlvAddr);
+void twi_send_byte(unsigned char data);
+void twi_stop(void);
+char twi_read_ack(void);
+char twi_read_nack(void);
+unsigned char get_dec(unsigned char hex_encoded);
+void syncTime(void);
+
+
 const unsigned int getDigit[] = {
   0b0111111001111110,	//0
   0b0101001000010100,	//1
@@ -54,10 +69,13 @@ unsigned char col_list[4] = { COL0, COL1, COL2, COL3 };
 
 //Display variables
 unsigned char col_tracker = 0;	//Used for column scanning
+volatile unsigned char seconds = 0;
 volatile unsigned char hour_tens = 10;
 volatile unsigned char hour_ones = 3;
 volatile unsigned char minute_tens = 0;
 volatile unsigned char minute_ones = 4;
+
+volatile unsigned char one_hz = 0;
 
 volatile unsigned char *time_digits[] = {
   &minute_ones,
@@ -73,7 +91,20 @@ void init(void) {
   SHIFTPORT &= ~SHIFTMASK;	//Set all pins low
   COLPORT &= ~COLMASK;	//Set all pins low
 
-  TWBR = 0x02;	//Set 400khz I2C clock - f_cpu/(16 + (2 * TWBR))*prescaler
+  //i2c
+  TWBR = 0x02;	//Set 400khz I2C clock without prescaler
+		//  equation: f_cpu/(16 + (2 * TWBR))*prescaler
+
+  //Enable 1 Hz output from DS3232
+  twi_start(i2c_write);
+  twi_send_byte(0x0e);	//Address for Control Register
+  twi_send_byte(0x00);	//Set 1 Hz square wave output
+  twi_stop();
+
+  //Enable INT0 for tracking square wave
+  EICRA |= (1<<ISC01);	// INT0 as input
+  EIMSK |= (1<<INT0);	// Enable interrupt
+  
 }
 
 void initTimers(void) {
@@ -82,9 +113,6 @@ void initTimers(void) {
   //Timer0 for display scanning
   TIMSK0 |= (1<<TOIE0);			//Enable overflow interrupt
   TCCR0B |= (1<<CS01) | (1<<CS00);	//Start timer, prescale 64
-
-  //Timer1 for 1 second timer
-
   
   sei();
 }
@@ -170,57 +198,38 @@ char twi_read_nack(void)
   return TWDR;  
 }
 
-int main(void) {
-  init();
-  initTimers();
+unsigned char get_dec(unsigned char hex_encoded) {
+  return ((hex_encoded>>4)*10) + (hex_encoded & 0x0F);
+}
 
+void syncTime(void) {
   //Get time from DS3232
   twi_start(i2c_write);
-  twi_send_byte(0x01);
+  twi_send_byte(0x00);
   twi_start(i2c_read);
+  unsigned char temp_secs = twi_read_ack();
   unsigned char temp_mins = twi_read_ack();
   unsigned char temp_hours = twi_read_nack();
   twi_stop();
 
-/*
-  if (temp_hours == 0x00) {	//00:00
-    hour_tens = 12;
-    hour_ones = 2;
-  }
-  else if (temp_hours < 0x10) {
-    hour_tens = 10;
-    hour_ones = temp_hours;
-  }
-  else if ((temp_hours >= 0x10) && (temp_hours < 0x13)) {
-    hour_tens = 12;
-    hour_ones = (temp_hours & 0x0F);
-  }
-  else if ((temp_hours >= 0x13) && (temp_hours < 0x20)) {
-    hour_tens = 10;
-    hour_ones = (temp_hours & 0x0F) - 2;
-  }
-  else if ((temp_hours >= 0x20) && (temp_hours < 0x22)) {
-    hour_tens = 10;
-    hour_ones = (temp_hours & 0x0F) + 8;
-  }
-  else {
-    hour_tens = 12;
-    hour_ones = (temp_hours & 0x0F) - 2;
-  }
-*/
-
-  unsigned char dec_hours = ((temp_hours>>4)*10) + (temp_hours & 0x0F);
-  if (dec_hours > 12) dec_hours -= 12;
-  hour_tens = ((dec_hours/10)*2) + 10;
-  hour_ones = dec_hours%10;
-
-
+  seconds = get_dec(temp_secs);
+  
+  temp_hours = get_dec(temp_hours);		//Convert hours to decimal
+  if (temp_hours > 12) temp_hours -= 12;	//Compensate for 24 hour time
+  hour_tens = ((temp_hours/10)*2) + 10;  	//Adjust tens for our colon indexing
+  hour_ones = temp_hours%10;
   minute_tens = temp_mins>>4;
   minute_ones = temp_mins & 0x0F;
+}
 
-  unsigned char seconds = 0;
+int main(void) {
+  init();
+  initTimers();
+
+  syncTime();
   
   while(1) {
+    /*
     delay_ms(1000);
 
     //blink the colon
@@ -229,36 +238,19 @@ int main(void) {
 
     //count seconds
     if (++seconds > 59) {
-      seconds = 0;
-      incMinute();
+      syncTime();
     }
+    */
 
+    if (one_hz) {
+      one_hz = 0;
     
-/*
-    for (unsigned char j=0; j<3; j++) {
-      COLPORT &= ~COLMASK;
-      COLPORT |= col_list[j];
+      //blink the colon
+      if ((hour_tens == 12) || (hour_tens == 10)) ++hour_tens;
+      else --hour_tens;
 
-      for (unsigned char i=0; i<10; i++) {
-        shift(getDigit[i]);
-        delay_ms(1000);
-      }
-   }
-    
-    COLPORT &= ~COLMASK;
-    shift(getDigit[1]);
-    COLPORT |= col_list[3];
-    delay_ms(1000);
-    shift((1<<13) | (1<<3));
-    delay_ms(1000);
-*/
-
-  /*
-  COLPORT &= ~ COLMASK; //All transistors low
-  COLPORT |= col_list[col_tracker];
-  if (++col_tracker > 3) col_tracker = 0;
-  delay_ms(1000);
-  */
+      if (++seconds > 59) { syncTime(); }
+    }
 
   }  
 }
@@ -269,5 +261,9 @@ ISR(TIMER0_OVF_vect) {
   SHIFTPORT |= RCK;			//Latch data
   COLPORT |= col_list[col_tracker];	//turn on next column
   if (++col_tracker > 3) col_tracker = 0;	//preload column for next interrupt
+}
+
+ISR(INT0_vect) {
+  ++one_hz;
 }
 

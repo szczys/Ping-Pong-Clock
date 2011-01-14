@@ -44,6 +44,8 @@ char twi_read_ack(void);
 char twi_read_nack(void);
 unsigned char get_dec(unsigned char hex_encoded);
 void syncTime(void);
+char get_temperature(void);
+unsigned char disp_temperature(void);
 
 
 const unsigned int getDigit[] = {
@@ -62,7 +64,9 @@ const unsigned int getDigit[] = {
   0b0000000000000000,	//all LEDs off
   0b0010000000001000,	//Colon illuminated
   0b0101001000010100,	//One without colon
-  0b0111001000011100	//One with colon
+  0b0111001000011100,	//One with colon
+
+  0b0100000011111111	//degree symbol (index: 14)
 };
 
 unsigned char col_list[4] = { COL0, COL1, COL2, COL3 };
@@ -76,6 +80,12 @@ volatile unsigned char minute_tens = 0;
 volatile unsigned char minute_ones = 4;
 
 volatile unsigned char one_hz = 0;
+
+//State definitions and variable
+#define disp_time 0
+#define disp_temp 1
+#define disp_set 2
+unsigned char state = disp_temp;
 
 volatile unsigned char *time_digits[] = {
   &minute_ones,
@@ -222,6 +232,33 @@ void syncTime(void) {
   minute_ones = temp_mins & 0x0F;
 }
 
+char get_temperature(void) {
+  //Get temperature from DS3232
+  twi_start(i2c_write);
+  twi_send_byte(0x11);	//Address of upper temperature byte
+  twi_start(i2c_read);
+  unsigned char curr_temperature = twi_read_nack();
+  twi_stop();
+
+  return curr_temperature;
+}
+
+unsigned char disp_temperature(void) {
+
+  //TODO: Improve code to use full temperature precision
+
+  signed char curr_temperature = get_temperature();	//Get temperature data (ignore 2 least significant bits)
+
+  //Convert from C to F
+  curr_temperature = ((curr_temperature*9)/5)+32;
+
+  if (curr_temperature > 99) hour_tens = 1;
+  else hour_tens = 10;
+  hour_ones = curr_temperature/10;
+  minute_tens = curr_temperature%10;
+  minute_ones = 14;	//Display degree symbol
+}
+
 int main(void) {
   init();
   initTimers();
@@ -229,29 +266,30 @@ int main(void) {
   syncTime();
   
   while(1) {
-    /*
-    delay_ms(1000);
-
-    //blink the colon
-    if ((hour_tens == 12) || (hour_tens == 10)) ++hour_tens;
-    else --hour_tens;
-
-    //count seconds
-    if (++seconds > 59) {
-      syncTime();
-    }
-    */
-
-    if (one_hz) {
-      one_hz = 0;
+    switch(state) {
     
-      //blink the colon
-      if ((hour_tens == 12) || (hour_tens == 10)) ++hour_tens;
-      else --hour_tens;
+      case disp_time:
+        if (one_hz) {
+          one_hz = 0;
+    
+          //blink the colon
+          if ((hour_tens == 12) || (hour_tens == 10)) ++hour_tens;
+          else --hour_tens;
 
-      if (++seconds > 59) { syncTime(); }
+          if (++seconds > 59) { syncTime(); }
+        }
+        break;
+
+      case disp_temp:
+        if (one_hz > 5) {	//Only update every 5 seconds
+          one_hz = 0;
+          disp_temperature();
+        }
+        break;
+
+      case disp_set:
+        break;
     }
-
   }  
 }
 

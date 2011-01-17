@@ -31,9 +31,26 @@
 #define i2c_read (i2c_slave_address + 1)
 #define i2c_write i2c_slave_address
 
+#define seconds_address	0x00
+#define minutes_address	0x01
+#define hours_address	0x02
+#define date_address	0x04
+#define month_address	0x05
+#define year_address	0x06
+
+//button definitions
+#define KEY_DDR		DDRB
+#define KEY_PORT	PORTB
+#define KEY_PIN		PINB
+#define KEY0		0	//Mode button
+#define KEY1		2	//Next
+#define KEY2		1	//+
+#define KEY3		3       //-
+
 //Prototypes
 void init(void);
 void initTimers(void);
+unsigned char get_key_press(unsigned char key_mask);
 void delay_ms(int c);
 void shift(unsigned int data);
 void incMinute(void);
@@ -44,8 +61,10 @@ char twi_read_ack(void);
 char twi_read_nack(void);
 unsigned char get_dec(unsigned char hex_encoded);
 void syncTime(void);
-char get_temperature(void);
-unsigned char disp_temperature(void);
+void disp_temperature(void);
+void showSettings(void);
+unsigned char ds3232_read_setting(unsigned char address);
+void ds3232_write_setting(unsigned char value);
 
 
 const unsigned int getDigit[] = {
@@ -66,10 +85,22 @@ const unsigned int getDigit[] = {
   0b0101001000010100,	//One without colon
   0b0111001000011100,	//One with colon
 
-  0b0100000011111111	//degree symbol (index: 14)
+  0b0100000001111111,	//degree symbol 		(index: 14)
+  0b0111101001001011,	// h 				(index: 15)
+  0b0101001000000100,	// m (left leg for hour ten	(index: 16)
+  0b0111001000001110,	// m (others for hour ones)	(index: 17)
+  0b0101001000010100,	// M (right leg for hour tens	(index: 18)
+  0b0101001001011110,	// M (others for hour ones)	(index: 19)
+  0b0111110001101110,	// D 				(index: 20)
+  0b1101111001011111	// Y				(index: 21)
 };
 
 unsigned char col_list[4] = { COL0, COL1, COL2, COL3 };
+
+//Debounce
+unsigned char debounce_cnt = 0;
+volatile unsigned char key_press;
+unsigned char key_state;
 
 //Display variables
 unsigned char col_tracker = 0;	//Used for column scanning
@@ -82,10 +113,11 @@ volatile unsigned char minute_ones = 4;
 volatile unsigned char one_hz = 0;
 
 //State definitions and variable
-#define disp_time 0
-#define disp_temp 1
-#define disp_set 2
-unsigned char state = disp_temp;
+#define state_time 0
+#define state_temperature 1
+#define state_set 2
+unsigned char state = state_time;
+unsigned char set_tracker;
 
 volatile unsigned char *time_digits[] = {
   &minute_ones,
@@ -102,18 +134,24 @@ void init(void) {
   COLPORT &= ~COLMASK;	//Set all pins low
 
   //i2c
-  TWBR = 0x02;	//Set 400khz I2C clock without prescaler
+  TWBR = 16;	//Set 200khz I2C clock without prescaler
 		//  equation: f_cpu/(16 + (2 * TWBR))*prescaler
 
   //Enable 1 Hz output from DS3232
+  cli();
   twi_start(i2c_write);
   twi_send_byte(0x0e);	//Address for Control Register
   twi_send_byte(0x00);	//Set 1 Hz square wave output
   twi_stop();
+  sei();
 
   //Enable INT0 for tracking square wave
   EICRA |= (1<<ISC01);	// INT0 as input
   EIMSK |= (1<<INT0);	// Enable interrupt
+
+  //Setup Button
+  KEY_DDR &= ~((1<<KEY0) | (1<<KEY1) | (1<<KEY2) | (1<<KEY3));
+  KEY_PORT |= (1<<KEY0) | (1<<KEY1) | (1<<KEY2) | (1<<KEY3);	//enable pull-up resistor
   
 }
 
@@ -123,8 +161,26 @@ void initTimers(void) {
   //Timer0 for display scanning
   TIMSK0 |= (1<<TOIE0);			//Enable overflow interrupt
   TCCR0B |= (1<<CS01) | (1<<CS00);	//Start timer, prescale 64
+
+  //Timer2 for buttons
+  TCCR2B |= 1<<CS22 | 1<<CS21 | 1<<CS20;	//Divide by 1024
+  TIMSK2 |= 1<<TOIE2;		//enable timer overflow interrupt
   
   sei();
+}
+
+/*--------------------------------------------------------------------------
+  FUNC: 7/23/10 - Used to read debounced button presses
+  PARAMS: A keymask corresponding to the pin for the button you with to poll
+  RETURNS: A keymask where any high bits represent a button press
+--------------------------------------------------------------------------*/
+unsigned char get_key_press( unsigned char key_mask )
+{
+  cli();			// read and clear atomic !
+  key_mask &= key_press;	// read key(s)
+  key_press ^= key_mask;	// clear key(s)
+  sei();
+  return key_mask;
 }
 
 void delay_ms(int c) {
@@ -214,6 +270,7 @@ unsigned char get_dec(unsigned char hex_encoded) {
 
 void syncTime(void) {
   //Get time from DS3232
+  cli();
   twi_start(i2c_write);
   twi_send_byte(0x00);
   twi_start(i2c_read);
@@ -221,6 +278,7 @@ void syncTime(void) {
   unsigned char temp_mins = twi_read_ack();
   unsigned char temp_hours = twi_read_nack();
   twi_stop();
+  sei();
 
   seconds = get_dec(temp_secs);
   
@@ -233,30 +291,102 @@ void syncTime(void) {
 }
 
 char get_temperature(void) {
+
+}
+
+void disp_temperature(void) {
   //Get temperature from DS3232
+  cli();
   twi_start(i2c_write);
   twi_send_byte(0x11);	//Address of upper temperature byte
   twi_start(i2c_read);
-  unsigned char curr_temperature = twi_read_nack();
+  unsigned char temperature_MSB = twi_read_ack();
+  unsigned char temperature_LSB = twi_read_nack();
   twi_stop();
+  sei();
 
-  return curr_temperature;
-}
+  //Combine temperature Bytes into a value 16 times larger than the actual reading
+  //  in order to avoid floating point math while still maintaining precision.
+  unsigned int curr_temperature = ((unsigned int)temperature_MSB << 4)+(temperature_LSB >> 4);
+  
 
-unsigned char disp_temperature(void) {
-
-  //TODO: Improve code to use full temperature precision
-
-  signed char curr_temperature = get_temperature();	//Get temperature data (ignore 2 least significant bits)
+  //unsigned char curr_temperature = ;	//Get temperature data (ignore 2 least significant bits)
 
   //Convert from C to F
-  curr_temperature = ((curr_temperature*9)/5)+32;
+  curr_temperature = ((curr_temperature*9)/5)+(32*16);	//Adjusting for precision
+
+  //Take care of dividing by sixteen and rounding accordingly
+  if ((curr_temperature%16) >= 8) curr_temperature = (curr_temperature >> 4) + 1;	//Round up
+  else curr_temperature >>= 4;	//Round down
 
   if (curr_temperature > 99) hour_tens = 1;
   else hour_tens = 10;
   hour_ones = curr_temperature/10;
   minute_tens = curr_temperature%10;
   minute_ones = 14;	//Display degree symbol
+}
+
+void showSettings(void) {
+  unsigned char data;
+  switch(set_tracker) {
+    case 0:
+      //hours
+      hour_tens = 10;	//off
+      hour_ones = 15;	// h
+      data = get_dec(ds3232_read_setting(hours_address));
+      minute_tens = data/10;
+      minute_ones = data%10;
+      break;
+    case 1:
+      //minutes
+      hour_tens = 16;	//first part of m
+      hour_ones = 17;	//second part of m
+      data = get_dec(ds3232_read_setting(minutes_address));
+      minute_tens = data/10;
+      minute_ones = data%10;
+      break;
+    case 2:
+      //Month
+      hour_tens = 18;	//first part of M
+      hour_ones = 19;	//second part of M
+      data = get_dec(ds3232_read_setting(month_address));
+      minute_tens = data/10;
+      minute_ones = data%10;
+      break;
+    case 3:
+      //Date
+      hour_tens = 10;	//off
+      hour_ones = 20;	// D
+      data = get_dec(ds3232_read_setting(date_address));
+      minute_tens = data/10;
+      minute_ones = data%10;
+      break;
+    case 4:
+      //Year
+      hour_tens = 10;	//off
+      hour_ones = 21;	// Y
+      data = get_dec(ds3232_read_setting(year_address));
+      minute_tens = data/10;
+      minute_ones = data%10;
+      break;
+  }
+}
+
+unsigned char ds3232_read_setting(unsigned char address) {
+  //Read one byte from DS3232
+  cli();
+  twi_start(i2c_write);
+  twi_send_byte(address);	//Send register address
+  twi_start(i2c_read);
+  unsigned char read_byte = twi_read_nack();
+  twi_stop();
+  sei();
+
+  return read_byte;
+}
+
+void ds3232_write_setting(unsigned char value) {
+
 }
 
 int main(void) {
@@ -268,7 +398,8 @@ int main(void) {
   while(1) {
     switch(state) {
     
-      case disp_time:
+      //Time State
+      case state_time:
         if (one_hz) {
           one_hz = 0;
     
@@ -278,16 +409,45 @@ int main(void) {
 
           if (++seconds > 59) { syncTime(); }
         }
-        break;
-
-      case disp_temp:
-        if (one_hz > 5) {	//Only update every 5 seconds
-          one_hz = 0;
+        if( get_key_press( 1<<KEY0 )) {	//Mode button
+          state = state_temperature;
           disp_temperature();
+          one_hz = 0;
         }
         break;
 
-      case disp_set:
+      //Temperature State
+      case state_temperature:
+        if (one_hz > 63) {	//The DS3232 only reads temperature
+                                //once every 64 seconds so that's
+                                //how often we'll update.
+          one_hz = 0;
+          disp_temperature();
+        }
+        if( get_key_press( 1<<KEY0 )) {	//Mode button
+          state = state_set;
+          set_tracker = 0;
+          showSettings();
+        }
+        break;
+
+      //Settings state
+      case state_set:
+        if( get_key_press( 1<<KEY0 )) {	//Mode button
+          syncTime();
+          one_hz = 0;
+          state = state_time;
+        }
+        if( get_key_press( 1<<KEY1 )) {	//Next button
+	  if (++set_tracker > 4) set_tracker = 0;
+          showSettings();
+        }
+        if( get_key_press( 1<<KEY2 )) {	//Plus button
+	  ++minute_ones;
+        }
+        if( get_key_press( 1<<KEY3 )) {	//Minus button
+	  --minute_ones;
+        }
         break;
     }
   }  
@@ -305,3 +465,17 @@ ISR(INT0_vect) {
   ++one_hz;
 }
 
+ISR(TIMER2_OVF_vect)           // every 10ms
+{
+  static unsigned char ct0, ct1;
+  unsigned char i;
+
+  TCNT0 = (unsigned char)(signed short)-(((F_CPU / 1024) * .01) + 0.5);   // preload for 10ms
+
+  i = key_state ^ ~KEY_PIN;    // key changed ?
+  ct0 = ~( ct0 & i );          // reset or count ct0
+  ct1 = ct0 ^ (ct1 & i);       // reset or count ct1
+  i &= ct0 & ct1;              // count until roll over ?
+  key_state ^= i;              // then toggle debounced state
+  key_press |= key_state & i;  // 0->1: key press detect
+}

@@ -62,6 +62,7 @@ char twi_read_nack(void);
 unsigned char get_dec(unsigned char hex_encoded);
 void syncTime(void);
 void disp_temperature(void);
+void increment_state(void);
 void showSettings(void);
 unsigned char ds3232_read_setting(unsigned char address);
 void ds3232_write_setting(unsigned char value);
@@ -134,16 +135,14 @@ void init(void) {
   COLPORT &= ~COLMASK;	//Set all pins low
 
   //i2c
-  TWBR = 16;	//Set 200khz I2C clock without prescaler
+  TWBR = 0x02;	//Set 400khz I2C clock without prescaler
 		//  equation: f_cpu/(16 + (2 * TWBR))*prescaler
 
   //Enable 1 Hz output from DS3232
-  cli();
   twi_start(i2c_write);
   twi_send_byte(0x0e);	//Address for Control Register
   twi_send_byte(0x00);	//Set 1 Hz square wave output
   twi_stop();
-  sei();
 
   //Enable INT0 for tracking square wave
   EICRA |= (1<<ISC01);	// INT0 as input
@@ -270,7 +269,6 @@ unsigned char get_dec(unsigned char hex_encoded) {
 
 void syncTime(void) {
   //Get time from DS3232
-  cli();
   twi_start(i2c_write);
   twi_send_byte(0x00);
   twi_start(i2c_read);
@@ -278,7 +276,6 @@ void syncTime(void) {
   unsigned char temp_mins = twi_read_ack();
   unsigned char temp_hours = twi_read_nack();
   twi_stop();
-  sei();
 
   seconds = get_dec(temp_secs);
   
@@ -290,20 +287,14 @@ void syncTime(void) {
   minute_ones = temp_mins & 0x0F;
 }
 
-char get_temperature(void) {
-
-}
-
 void disp_temperature(void) {
   //Get temperature from DS3232
-  cli();
   twi_start(i2c_write);
   twi_send_byte(0x11);	//Address of upper temperature byte
   twi_start(i2c_read);
   unsigned char temperature_MSB = twi_read_ack();
   unsigned char temperature_LSB = twi_read_nack();
   twi_stop();
-  sei();
 
   //Combine temperature Bytes into a value 16 times larger than the actual reading
   //  in order to avoid floating point math while still maintaining precision.
@@ -324,6 +315,25 @@ void disp_temperature(void) {
   hour_ones = curr_temperature/10;
   minute_tens = curr_temperature%10;
   minute_ones = 14;	//Display degree symbol
+}
+
+void increment_state(void) {
+  if (++state > state_set) state = state_time;
+  one_hz = 0;
+
+  switch(state) {
+    case state_time:
+      //TODO: we just switched from settings, so save the last setting entered
+      syncTime();
+      break;
+    case state_temperature:
+      disp_temperature();
+      break;
+    case state_set:
+      set_tracker = 0;
+      showSettings();
+      break;
+  }
 }
 
 void showSettings(void) {
@@ -374,13 +384,11 @@ void showSettings(void) {
 
 unsigned char ds3232_read_setting(unsigned char address) {
   //Read one byte from DS3232
-  cli();
   twi_start(i2c_write);
   twi_send_byte(address);	//Send register address
   twi_start(i2c_read);
   unsigned char read_byte = twi_read_nack();
   twi_stop();
-  sei();
 
   return read_byte;
 }
@@ -396,8 +404,12 @@ int main(void) {
   syncTime();
   
   while(1) {
-    switch(state) {
     
+    if( get_key_press( 1<<KEY0 )) {	//Mode button
+      increment_state();
+    }
+
+    switch(state) {
       //Time State
       case state_time:
         if (one_hz) {
@@ -409,11 +421,6 @@ int main(void) {
 
           if (++seconds > 59) { syncTime(); }
         }
-        if( get_key_press( 1<<KEY0 )) {	//Mode button
-          state = state_temperature;
-          disp_temperature();
-          one_hz = 0;
-        }
         break;
 
       //Temperature State
@@ -424,20 +431,10 @@ int main(void) {
           one_hz = 0;
           disp_temperature();
         }
-        if( get_key_press( 1<<KEY0 )) {	//Mode button
-          state = state_set;
-          set_tracker = 0;
-          showSettings();
-        }
         break;
 
       //Settings state
       case state_set:
-        if( get_key_press( 1<<KEY0 )) {	//Mode button
-          syncTime();
-          one_hz = 0;
-          state = state_time;
-        }
         if( get_key_press( 1<<KEY1 )) {	//Next button
 	  if (++set_tracker > 4) set_tracker = 0;
           showSettings();

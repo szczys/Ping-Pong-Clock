@@ -64,8 +64,11 @@ void syncTime(void);
 void disp_temperature(void);
 void increment_state(void);
 void showSettings(void);
+void saveSettings(void);
 unsigned char ds3232_read_setting(unsigned char address);
-void ds3232_write_setting(unsigned char value);
+void ds3232_write_setting(unsigned char address, unsigned char value);
+void increment_settings_value(void);
+void decrement_settings_value(void);
 
 
 const unsigned int getDigit[] = {
@@ -323,7 +326,7 @@ void increment_state(void) {
 
   switch(state) {
     case state_time:
-      //TODO: we just switched from settings, so save the last setting entered
+      saveSettings();
       syncTime();
       break;
     case state_temperature:
@@ -382,6 +385,34 @@ void showSettings(void) {
   }
 }
 
+void saveSettings(void) {
+  //Roll data into decimal tens on upper nibble and decimal ones on lower nibble
+  unsigned char data = ((minute_tens<<4) + minute_ones);
+  switch(set_tracker) {
+    case 0:
+      //hours
+      ds3232_write_setting(hours_address, data);
+      break;
+    case 1:
+      //minutes (also reset seconds to zero)
+      ds3232_write_setting(minutes_address, data);
+      ds3232_write_setting(seconds_address, 0x00);
+      break;
+    case 2:
+      //Month
+      ds3232_write_setting(month_address, data);
+      break;
+    case 3:
+      //Date
+      ds3232_write_setting(date_address, data);
+      break;
+    case 4:
+      //Year
+      ds3232_write_setting(year_address, data);
+      break;
+  }
+}
+
 unsigned char ds3232_read_setting(unsigned char address) {
   //Read one byte from DS3232
   twi_start(i2c_write);
@@ -393,8 +424,78 @@ unsigned char ds3232_read_setting(unsigned char address) {
   return read_byte;
 }
 
-void ds3232_write_setting(unsigned char value) {
+void ds3232_write_setting(unsigned char address, unsigned char value) {
+  //Write one byte from DS3232
+  twi_start(i2c_write);
+  twi_send_byte(address);	//Send register address
+  twi_send_byte(value);
+  twi_stop(); 
+}
 
+void increment_settings_value(void) {
+  //Convert separated digits to decimal
+  unsigned char data = (minute_tens * 10) + minute_ones;
+
+  switch(set_tracker) {
+    case 0:
+      //hours
+      if (++data > 23) data = 0; 
+      break;
+    case 1:
+      //minutes (also reset seconds to zero)
+      if (++data > 59) data = 0;
+      break;
+    case 2:
+      //Month
+      if (++data > 12) data = 1;
+      break;
+    case 3:
+      //Date	NOTE: There is no checking for correct days in a month
+      if (++data > 31) data = 1;
+      break;
+    case 4:
+      //Year
+      if (++data > 99) data = 0;
+      break;
+  }
+
+  //Store value as separated digits
+  if (data < 10) minute_tens = 0;
+  else minute_tens = data/10;
+  minute_ones = data%10;
+}
+
+void decrement_settings_value(void) {
+  //Convert separated digits to decimal
+  unsigned char data = (minute_tens * 10) + minute_ones;
+
+  switch(set_tracker) {
+    case 0:
+      //hours
+      if (data-- == 0) data = 23; 
+      break;
+    case 1:
+      //minutes (also reset seconds to zero)
+      if (data-- == 0) data = 59;
+      break;
+    case 2:
+      //Month
+      if (data-- == 0) data = 12;
+      break;
+    case 3:
+      //Date	NOTE: There is no checking for correct days in a month
+      if (data-- == 0) data = 31;
+      break;
+    case 4:
+      //Year
+      if (data-- == 0) data = 99;
+      break;
+  }
+
+  //Store value as separated digits
+  if (data < 10) minute_tens = 0;
+  else minute_tens = data/10;
+  minute_ones = data%10;
 }
 
 int main(void) {
@@ -436,14 +537,18 @@ int main(void) {
       //Settings state
       case state_set:
         if( get_key_press( 1<<KEY1 )) {	//Next button
+          //Save current setting
+          saveSettings();
+
+          //Move to next setting
 	  if (++set_tracker > 4) set_tracker = 0;
           showSettings();
         }
         if( get_key_press( 1<<KEY2 )) {	//Plus button
-	  ++minute_ones;
+	  increment_settings_value();
         }
         if( get_key_press( 1<<KEY3 )) {	//Minus button
-	  --minute_ones;
+	  decrement_settings_value();
         }
         break;
     }

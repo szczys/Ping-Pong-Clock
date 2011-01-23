@@ -43,9 +43,9 @@
 #define KEY_PORT	PORTB
 #define KEY_PIN		PINB
 #define KEY0		0	//Mode button
-#define KEY1		2	//Next
-#define KEY2		1	//+
-#define KEY3		3       //-
+#define KEY1		3	//Next
+#define KEY2		2	//+
+#define KEY3		1       //-
 
 //Prototypes
 void init(void);
@@ -70,33 +70,51 @@ void ds3232_write_setting(unsigned char address, unsigned char value);
 void increment_settings_value(void);
 void decrement_settings_value(void);
 
+/*******************************
+
+ Character set for 13-led digit.
+ Numbers represent bit in an int:
+
+ 14,13,12,
+ 11,  ,10,
+  9, 8, 6,
+  5,    4,
+  3, 2, 1,
+
+ Bits 0,7,15 are unused
+
+ Colon used bits 11, 5, of the
+ tens digit for top and bottom dot.
+
+*******************************/
 
 const unsigned int getDigit[] = {
+
   0b0111111001111110,	//0
-  0b0101001000010100,	//1
-  0b0110111001110111,	//2
-  0b0101111001110101,	//3
-  0b0101001001011111,	//4
-  0b0101111001111011,	//5
-  0b0111111001111011,	//6
-  0b0101001001110100,	//7
-  0b0111111001111111,	//8
-  0b0101111001111111,	//9
+  0b0001010001010010,	//1
+  0b0111011101101110,	//2
+  0b0111010101011110,	//3
+  0b0101111101010010,	//4
+  0b0111101101011110,	//5
+  0b0111101101111110,	//6
+  0b0111010001010010,	//7
+  0b0111111101111110,	//8
+  0b0111111101011110,	//9
 
   //Used for Hours Tens with dividing colon data
   0b0000000000000000,	//all LEDs off
-  0b0010000000001000,	//Colon illuminated
-  0b0101001000010100,	//One without colon
-  0b0111001000011100,	//One with colon
+  0b0000100000100000,	//Colon illuminated
+  0b0001010001010010,	//One without colon
+  0b0001110001110010,	//One with colon
 
-  0b0100000001111111,	//degree symbol 		(index: 14)
-  0b0111101001001011,	// h 				(index: 15)
-  0b0101001000000100,	// m (left leg for hour ten	(index: 16)
-  0b0111001000001110,	// m (others for hour ones)	(index: 17)
-  0b0101001000010100,	// M (right leg for hour tens	(index: 18)
-  0b0101001001011110,	// M (others for hour ones)	(index: 19)
-  0b0111110001101110,	// D 				(index: 20)
-  0b1101111001011111	// Y				(index: 21)
+  0b0111111101000000,	//degree symbol 		(index: 14)
+  0b0100101101111010,	// h 				(index: 15)
+  0b0000010001010010,	// m (left leg for hour ten	(index: 16)
+  0b0000111001110010,	// m (others for hour ones)	(index: 17)
+  0b0001010001010010,	// M (right leg for hour tens	(index: 18)
+  0b0101111001010010,	// M (others for hour ones)	(index: 19)
+  0b0110111001111100,	// D 				(index: 20)
+  0b0101111101011110	// Y				(index: 21)
 };
 
 unsigned char col_list[4] = { COL0, COL1, COL2, COL3 };

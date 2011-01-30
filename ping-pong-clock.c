@@ -44,8 +44,8 @@
 #define KEY_PIN		PINB
 #define KEY0		0	//Mode button
 #define KEY1		3	//Next
-#define KEY2		2	//+
-#define KEY3		1       //-
+#define KEY2		1	//+
+#define KEY3		2       //-
 
 //Prototypes
 void init(void);

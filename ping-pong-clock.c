@@ -25,7 +25,7 @@ Copyright (c) 2010 Mike Szczys
   time. A multiplexed LED display is used with ping-pong balls as diffusers.
   There are four buttons that facilitate selecting between time and
   temperature being displayed, and setting the time and date.
-    http://jumptuck.wordpress.com/2010/08/01/garage-door-code-button/
+    http://wp.me/pk3lN-8Mt
 --------------------------------------------------------------------------*/
 /*--------------------------------------------------------------------------
   Planned Improvements:

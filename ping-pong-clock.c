@@ -1,10 +1,46 @@
+/*--------------------------------------------------------------------------
+Ping-Pong Clock
+Copyright (c) 2010 Mike Szczys
+
+ Permission is hereby granted, free of charge, to any person obtaining a copy
+ of this software and associated documentation files (the "Software"), to deal
+ in the Software without restriction, including without limitation the rights
+ to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+ copies of the Software, and to permit persons to whom the Software is
+ furnished to do so, subject to the following conditions:
+
+ The above copyright notice and this permission notice shall be included in
+ all copies or substantial portions of the Software.
+
+ THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+ IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+ FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+ AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+ LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
+ THE SOFTWARE.
+--------------------------------------------------------------------------*/
+/*--------------------------------------------------------------------------
+  This project uses an ATmega168 and a DS3232 real time clock to display
+  time. A multiplexed LED display is used with ping-pong balls as diffusers.
+  There are four buttons that facilitate selecting between time and
+  temperature being displayed, and setting the time and date.
+    http://jumptuck.wordpress.com/2010/08/01/garage-door-code-button/
+--------------------------------------------------------------------------*/
+/*--------------------------------------------------------------------------
+  Planned Improvements:
+    I would like this clock to adjust for daylight savings time
+    automatically. Future improvements will include a function to calculate
+    the day of the week (for storage in the DS3232 RTC) and then to use a
+    lookup table for DST adjustments to the displayed time.
+--------------------------------------------------------------------------*/
+
 #define F_CPU 8000000
 
 #include <avr/io.h>
 #include <avr/interrupt.h>
-#include <util/delay.h>
 
-
+//13 pixels address by two 595 shift registers
 #define SHIFTDDR DDRC
 #define SHIFTPORT PORTC
 #define SCK (1<<PC0)
@@ -12,6 +48,7 @@
 #define SI (1<<PC2)
 #define SHIFTMASK (SCK | RCK | SI)
 
+//Digits pulled low by NPN transistors
 #define COLDDR DDRD
 #define COLPORT PORTD
 #define COL0 (1<<PD4)
@@ -20,17 +57,12 @@
 #define COL3 (1<<PD7)
 #define COLMASK (COL0 | COL1 | COL2 | COL3)
 
-//Definitions for lighting up numbers
-#define digit0 0b01
-#define digit1 0b1111111100000000
-#define digit2 0b0000000011111111
-#define digit3 0b0101010101010101
-
 //i2c definitions
 #define i2c_slave_address 0xD0 	//Address for DS3232
 #define i2c_read (i2c_slave_address + 1)
 #define i2c_write i2c_slave_address
 
+//Register addresses for time and date settings
 #define seconds_address	0x00
 #define minutes_address	0x01
 #define hours_address	0x02
@@ -51,9 +83,7 @@
 void init(void);
 void initTimers(void);
 unsigned char get_key_press(unsigned char key_mask);
-void delay_ms(int c);
 void shift(unsigned int data);
-void incMinute(void);
 void twi_start(unsigned char SlvAddr);
 void twi_send_byte(unsigned char data);
 void twi_stop(void);
@@ -117,6 +147,7 @@ const unsigned int getDigit[] = {
   0b0101111101011110	// Y				(index: 21)
 };
 
+//Lookup table for column I/O definitions
 unsigned char col_list[4] = { COL0, COL1, COL2, COL3 };
 
 //Debounce
@@ -132,6 +163,7 @@ volatile unsigned char hour_ones = 3;
 volatile unsigned char minute_tens = 0;
 volatile unsigned char minute_ones = 4;
 
+//Used as a flag by the INT0 ISR
 volatile unsigned char one_hz = 0;
 
 //State definitions and variable
@@ -141,6 +173,7 @@ volatile unsigned char one_hz = 0;
 unsigned char state = state_time;
 unsigned char set_tracker;
 
+//Array of pointers to currently displayed digit values
 volatile unsigned char *time_digits[] = {
   &minute_ones,
   &minute_tens,
@@ -148,6 +181,11 @@ volatile unsigned char *time_digits[] = {
   &hour_tens
 };
 
+/*--------------------------------------------------------------------------
+  FUNC: 1/30/11 - Initialize I/O and communications
+  PARAMS: None
+  RETURNS: None
+--------------------------------------------------------------------------*/
 void init(void) {
   SHIFTDDR |= SHIFTMASK;	//Set pins as outputs
   COLDDR |= COLMASK;	//Set pins as outputs
@@ -175,6 +213,11 @@ void init(void) {
   
 }
 
+/*--------------------------------------------------------------------------
+  FUNC: 1/30/11 - 
+  PARAMS: None
+  RETURNS: None
+--------------------------------------------------------------------------*/
 void initTimers(void) {
   cli();
 
@@ -203,12 +246,11 @@ unsigned char get_key_press( unsigned char key_mask )
   return key_mask;
 }
 
-void delay_ms(int c) {
-  while(c--) {
-    _delay_ms(1);
-  }
-}
-
+/*--------------------------------------------------------------------------
+  FUNC: 1/30/11 - Send data to shift register
+  PARAMS: sixteen bits of data to be shifted into the register
+  RETURNS: None
+--------------------------------------------------------------------------*/
 void shift(unsigned int data) {
   SHIFTPORT &= ~SHIFTMASK; //All pins low
 
@@ -225,29 +267,11 @@ void shift(unsigned int data) {
   //NOTE: latching will be handled by interrupt to keep LEDs lit as long as possible
 }
 
-void incMinute(void) {
-  //NOTE: hours tens will be 10, 11, 12, or 13 because the flashing colon
-  //      is driven by the same digit. See getDigit[] above.
-  if (++minute_ones > 9) {
-    minute_ones = 0;
-    if (++minute_tens > 5) {
-      minute_tens = 0;
-      if ((hour_tens == 12) || (hour_tens == 13)) { 
-        if (++hour_ones > 2) {
-          hour_ones = 1;
-          hour_tens = 10;	//10 represents all LEDs off
-        }
-      }
-      else {
-        if (++hour_ones > 9) {
-          hour_ones = 0;
-          hour_tens = 12;
-        }
-      }
-    }
-  }
-}
-
+/*--------------------------------------------------------------------------
+  FUNC: 1/30/11 - TWI (or i2c) start condition
+  PARAMS: The address of the slave device
+  RETURNS: None
+--------------------------------------------------------------------------*/
 void twi_start(unsigned char SlvAddr)
 {
   TWCR = (1<<TWINT) | (1<<TWEN) | (1<<TWSTA);   //Send start command
@@ -257,6 +281,11 @@ void twi_start(unsigned char SlvAddr)
   while(!(TWCR & (1<<TWINT)));                  //Wait for bus to become ready
 }
 
+/*--------------------------------------------------------------------------
+  FUNC: 1/30/11 - Send one byte of data over TWI (or i2c)
+  PARAMS: eight bits of data
+  RETURNS: None
+--------------------------------------------------------------------------*/
 void twi_send_byte(unsigned char data)
 {
   TWDR = data;
@@ -264,12 +293,21 @@ void twi_send_byte(unsigned char data)
   while(!(TWCR & (1<<TWINT))); 
 }
 
-
+/*--------------------------------------------------------------------------
+  FUNC: 1/30/11 - TWI (or i2c) stop condition
+  PARAMS: None
+  RETURNS: None
+--------------------------------------------------------------------------*/
 void twi_stop(void)
 {
   TWCR = (1<<TWINT) | (1<<TWEN) | (1<<TWSTO);
 }
 
+/*--------------------------------------------------------------------------
+  FUNC: 1/30/11 - TWI (or i2c) read one byte and send ack bit
+  PARAMS: None
+  RETURNS: one byte of data
+--------------------------------------------------------------------------*/
 char twi_read_ack(void)
 {
   TWCR = (1<<TWINT) | (1<<TWEN) | (1<<TWEA);
@@ -277,6 +315,11 @@ char twi_read_ack(void)
   return TWDR;
 }
 
+/*--------------------------------------------------------------------------
+  FUNC: 1/30/11 - TWI (or i2c) read one byte and send nack bit
+  PARAMS: None
+  RETURNS: one byte of data
+--------------------------------------------------------------------------*/
 char twi_read_nack(void)
 {
   TWCR = (1<<TWINT) | (1<<TWEN);
@@ -284,10 +327,25 @@ char twi_read_nack(void)
   return TWDR;  
 }
 
+/*--------------------------------------------------------------------------
+  FUNC: 1/30/11 - Convert hex-encoded decimal to decimal data
+  PARAMS: Hex encoded decimal number
+  RETURNS: plain decimal number
+  NOTES: DS3232 uses hexicdecimal numbers but they represent decimal
+    numbers. EG: 0x12 = 12; when the first hex digit reaches 10, it
+    carries over to the next digit instead of displaying A as normal
+--------------------------------------------------------------------------*/
 unsigned char get_dec(unsigned char hex_encoded) {
   return ((hex_encoded>>4)*10) + (hex_encoded & 0x0F);
 }
 
+/*--------------------------------------------------------------------------
+  FUNC: 1/30/11 - Synchronizes save time values with the DS3232 RTC
+  PARAMS: None
+  RETURNS: None
+  NOTES: This sets four global variables: hour_tens, hour_ones, minute_tens,
+    and minute_ones.
+--------------------------------------------------------------------------*/
 void syncTime(void) {
   //Get time from DS3232
   twi_start(i2c_write);
@@ -308,6 +366,13 @@ void syncTime(void) {
   minute_ones = temp_mins & 0x0F;
 }
 
+/*--------------------------------------------------------------------------
+  FUNC: 1/30/11 - Reads DS3232 temperature and displays it
+  PARAMS: None
+  RETURNS: None
+  NOTES: This sets four global variables: hour_tens, hour_ones, minute_tens,
+    and minute_ones.
+--------------------------------------------------------------------------*/
 void disp_temperature(void) {
   //Get temperature from DS3232
   twi_start(i2c_write);
@@ -338,6 +403,12 @@ void disp_temperature(void) {
   minute_ones = 14;	//Display degree symbol
 }
 
+/*--------------------------------------------------------------------------
+  FUNC: 1/30/11 - Increments the current state of the state machine
+  PARAMS: None
+  RETURNS: None
+  NOTES: This changes the global variable 'state'
+--------------------------------------------------------------------------*/
 void increment_state(void) {
   if (++state > state_set) state = state_time;
   one_hz = 0;
@@ -357,6 +428,12 @@ void increment_state(void) {
   }
 }
 
+/*--------------------------------------------------------------------------
+  FUNC: 1/30/11 - Displays current settings mode
+  PARAMS: None
+  RETURNS: None
+  NOTES: This is based on the global variable 'set_tracker'
+--------------------------------------------------------------------------*/
 void showSettings(void) {
   unsigned char data;
   switch(set_tracker) {
@@ -403,6 +480,15 @@ void showSettings(void) {
   }
 }
 
+/*--------------------------------------------------------------------------
+  FUNC: 1/30/11 - Saves current time and date settings to the DS3232
+  PARAMS: None
+  RETURNS: None
+  NOTES:
+    -Uses global variable 'set_tracker' to determine which time data
+     is to be set. Records the currently displayed data.
+    -When minutes are recorded seconds are also zeroed out.    
+--------------------------------------------------------------------------*/
 void saveSettings(void) {
   //Roll data into decimal tens on upper nibble and decimal ones on lower nibble
   unsigned char data = ((minute_tens<<4) + minute_ones);
@@ -431,6 +517,11 @@ void saveSettings(void) {
   }
 }
 
+/*--------------------------------------------------------------------------
+  FUNC: 1/30/11 - Read one byte from DS3232 RTC over i2c bus
+  PARAMS: DS3232 register address to read from
+  RETURNS: One byte of data read from give DS3232 address
+--------------------------------------------------------------------------*/
 unsigned char ds3232_read_setting(unsigned char address) {
   //Read one byte from DS3232
   twi_start(i2c_write);
@@ -442,6 +533,13 @@ unsigned char ds3232_read_setting(unsigned char address) {
   return read_byte;
 }
 
+/*--------------------------------------------------------------------------
+  FUNC: 1/30/11 - Write one byte to DS3232 RTC over i2c bus
+  PARAMS:
+    1: Register address to write to
+    2: Byte of data to store at that address
+  RETURNS: None
+--------------------------------------------------------------------------*/
 void ds3232_write_setting(unsigned char address, unsigned char value) {
   //Write one byte from DS3232
   twi_start(i2c_write);
@@ -450,6 +548,12 @@ void ds3232_write_setting(unsigned char address, unsigned char value) {
   twi_stop(); 
 }
 
+/*--------------------------------------------------------------------------
+  FUNC: 1/30/11 - Increments current settings value and updates display.
+  PARAMS: None
+  RETURNS: None
+  NOTES: Uses global variable 'set_tracker'
+--------------------------------------------------------------------------*/
 void increment_settings_value(void) {
   //Convert separated digits to decimal
   unsigned char data = (minute_tens * 10) + minute_ones;
@@ -483,6 +587,11 @@ void increment_settings_value(void) {
   minute_ones = data%10;
 }
 
+/*--------------------------------------------------------------------------
+  FUNC: 1/30/11 - Decrements current settings value and updates display
+  PARAMS: None
+  RETURNS: None
+--------------------------------------------------------------------------*/
 void decrement_settings_value(void) {
   //Convert separated digits to decimal
   unsigned char data = (minute_tens * 10) + minute_ones;
@@ -516,6 +625,11 @@ void decrement_settings_value(void) {
   minute_ones = data%10;
 }
 
+/*--------------------------------------------------------------------------
+  FUNC: 1/30/11 - Main
+  PARAMS: None
+  RETURNS: None
+--------------------------------------------------------------------------*/
 int main(void) {
   init();
   initTimers();
@@ -573,6 +687,12 @@ int main(void) {
   }  
 }
 
+/*--------------------------------------------------------------------------
+  FUNC: 1/30/11 - Timer0 overflow interrupt service routine
+  PARAMS: None
+  RETURNS: None
+  NOTES: Used to multiplex the display
+--------------------------------------------------------------------------*/
 ISR(TIMER0_OVF_vect) {
   shift(getDigit[*(time_digits[col_tracker])]);
   COLPORT &= ~COLMASK;			//Turn off columns
@@ -581,10 +701,27 @@ ISR(TIMER0_OVF_vect) {
   if (++col_tracker > 3) col_tracker = 0;	//preload column for next interrupt
 }
 
+/*--------------------------------------------------------------------------
+  FUNC: 1/30/11 - INT0 interrupt service routine
+  PARAMS: None
+  RETURNS: None
+  NOTES: Triggers on falling edge; used to blink the colon in the display
+    and track one minute periods for syncronization with the DS3232. The
+    one hertz squarewave is generated by the RTC.
+--------------------------------------------------------------------------*/
 ISR(INT0_vect) {
   ++one_hz;
 }
 
+/*--------------------------------------------------------------------------
+  FUNC: 1/30/11 - TIMER2 overflow interrupt service routine
+  PARAMS: None
+  RETURNS: None
+  NOTES: Used to debounce buttons. 
+  FIXME: The buttons seems slightly lethargic,
+    causing some presses not to register. This could be because other
+    interrupts are cause this routine to run less than ever ten ms.
+--------------------------------------------------------------------------*/
 ISR(TIMER2_OVF_vect)           // every 10ms
 {
   static unsigned char ct0, ct1;

@@ -25,7 +25,7 @@ Copyright (c) 2010 Mike Szczys
   time. A multiplexed LED display is used with ping-pong balls as diffusers.
   There are four buttons that facilitate selecting between time and
   temperature being displayed, and setting the time and date.
-    http://wp.me/pk3lN-8Mt
+    http://hackaday.com/2011/01/31/how-to-build-a-ping-pong-ball-display/
 --------------------------------------------------------------------------*/
 /*--------------------------------------------------------------------------
   Planned Improvements:
@@ -39,6 +39,48 @@ Copyright (c) 2010 Mike Szczys
 
 #include <avr/io.h>
 #include <avr/interrupt.h>
+
+/***********************************************
+* Conditional defines for different processors *
+***********************************************/
+
+//The microprocessor is selected by setting the
+//  MCU definitions at the beginning of the makefile
+//  (eg: MCU = atmega168)
+
+#if defined(__AVR_ATmega8__)			//ATmega8
+
+  //INT0 register definitions
+  #define EXT_INT_CONTROL	MCUCR
+  #define EXT_INT_SELECT 	GICR
+
+  //Timer0 register definitions
+  #define TIMER0_CTRL_REG	TCCR0
+  #define TIMER0_INT_MASK	TIMSK
+
+  //Timer2 register definitions
+  #define TIMER2_CTRL_REG	TCCR2
+  #define TIMER2_INT_MASK	TIMSK
+
+#elif defined(__AVR_ATmega168__)		//ATmega168
+
+  //INT0 register definitions
+  #define EXT_INT_CONTROL	EICRA
+  #define EXT_INT_SELECT 	EIMSK
+
+  //Timer0 register definitions
+  #define TIMER0_CTRL_REG	TCCR0B
+  #define TIMER0_INT_MASK	TIMSK0
+
+  //Timer2 register definitions
+  #define TIMER2_CTRL_REG	TCCR2B
+  #define TIMER2_INT_MASK	TIMSK2
+
+#endif
+
+/***********************************************
+* End conditonal defines                       *
+***********************************************/
 
 //13 pixels address by two 595 shift registers
 #define SHIFTDDR DDRC
@@ -204,8 +246,8 @@ void init(void) {
   twi_stop();
 
   //Enable INT0 for tracking square wave
-  EICRA |= (1<<ISC01);	// INT0 as input
-  EIMSK |= (1<<INT0);	// Enable interrupt
+  EXT_INT_CONTROL |= (1<<ISC01);	// INT0 as input on falling edge
+  EXT_INT_SELECT |= (1<<INT0);	// Enable interrupt
 
   //Setup Button
   KEY_DDR &= ~((1<<KEY0) | (1<<KEY1) | (1<<KEY2) | (1<<KEY3));
@@ -222,12 +264,12 @@ void initTimers(void) {
   cli();
 
   //Timer0 for display scanning
-  TIMSK0 |= (1<<TOIE0);			//Enable overflow interrupt
-  TCCR0B |= (1<<CS01) | (1<<CS00);	//Start timer, prescale 64
+  TIMER0_INT_MASK |= (1<<TOIE0);			//Enable overflow interrupt
+  TIMER0_CTRL_REG |= (1<<CS01) | (1<<CS00);	//Start timer, prescale 64
 
   //Timer2 for buttons
-  TCCR2B |= 1<<CS22 | 1<<CS21 | 1<<CS20;	//Divide by 1024
-  TIMSK2 |= 1<<TOIE2;		//enable timer overflow interrupt
+  TIMER2_CTRL_REG |= 1<<CS22 | 1<<CS21 | 1<<CS20;	//Divide by 1024
+  TIMER2_INT_MASK |= 1<<TOIE2;		//enable timer overflow interrupt
   
   sei();
 }
@@ -717,17 +759,14 @@ ISR(INT0_vect) {
   FUNC: 1/30/11 - TIMER2 overflow interrupt service routine
   PARAMS: None
   RETURNS: None
-  NOTES: Used to debounce buttons. 
-  FIXME: The buttons seems slightly lethargic,
-    causing some presses not to register. This could be because other
-    interrupts are cause this routine to run less than ever ten ms.
+  NOTES: Used to debounce buttons.
 --------------------------------------------------------------------------*/
 ISR(TIMER2_OVF_vect)           // every 10ms
 {
   static unsigned char ct0, ct1;
   unsigned char i;
 
-  TCNT0 = (unsigned char)(signed short)-(((F_CPU / 1024) * .01) + 0.5);   // preload for 10ms
+  TCNT2 = (unsigned char)(signed short)-(((F_CPU / 1024) * .01) + 0.5);   // preload for 10ms
 
   i = key_state ^ ~KEY_PIN;    // key changed ?
   ct0 = ~( ct0 & i );          // reset or count ct0

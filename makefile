@@ -12,7 +12,7 @@
 # To rebuild project do "make clean" then "make all".
 
 # Microcontroller Type
-#MCU = attiny13
+# MCU = attiny13
 # MCU = attiny2313
 # MCU = atmega8
 MCU = atmega168
